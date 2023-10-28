@@ -258,7 +258,7 @@ class ResNet(nn.Module):
                                        block_size=dropblock_size)
         self.layer4 = self._make_layer(block, 640, stride=2, drop_rate=drop_rate, drop_block=True,
                                        block_size=dropblock_size)
-        # self.eff = EfficientAttention(64)
+        self.eff = EfficientAttention(64)
 
         if avg_pool:
             #self.avgpool = nn.AvgPool2d(5, stride=1)
@@ -293,7 +293,7 @@ class ResNet(nn.Module):
     def forward(self, x):
         x = self.layer1(x)
 
-        # x = self.eff(x)
+        x = self.eff(x)
 
         x = self.layer2(x)
         x = self.layer3(x)
