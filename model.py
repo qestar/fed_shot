@@ -323,6 +323,7 @@ class ResNet(nn.Module):
     def forward(self, x):
         x = self.layer1(x)
 
+        x = self.eff(x)
         x = self.ema(x)
 
         x = self.layer2(x)
