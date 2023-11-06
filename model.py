@@ -417,7 +417,7 @@ class BasicBlock(nn.Module):
         out = self.conv3(out)
         out = self.bn3(out)
 
-        out = self.ema(out) * out
+        out = self.ema(out)
 
         if self.downsample is not None:
             residual = self.downsample(x)
