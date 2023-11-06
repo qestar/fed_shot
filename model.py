@@ -399,6 +399,8 @@ class BasicBlock(nn.Module):
         self.block_size = block_size
         self.DropBlock = DropBlock(block_size=self.block_size)
 
+        self.ema = EMA(planes)
+
     def forward(self, x):
         self.num_batches_tracked += 1
 
@@ -414,6 +416,8 @@ class BasicBlock(nn.Module):
 
         out = self.conv3(out)
         out = self.bn3(out)
+
+        out = self.ema(out) * out
 
         if self.downsample is not None:
             residual = self.downsample(x)
@@ -445,9 +449,9 @@ class ResNet(nn.Module):
                                        block_size=dropblock_size)
         self.layer4 = self._make_layer(block, 640, stride=2, drop_rate=drop_rate, drop_block=True,
                                        block_size=dropblock_size)
-        self.eff = EfficientAttention(64)
-        self.ema = EMA(64)
-        self.stvit = StokenAttention(64, stoken_size=[8,8])
+        # self.eff = EfficientAttention(64)
+        # self.ema = EMA(64)
+        # self.stvit = StokenAttention(64, stoken_size=[8,8])
 
         if avg_pool:
             #self.avgpool = nn.AvgPool2d(5, stride=1)
@@ -483,7 +487,7 @@ class ResNet(nn.Module):
         x = self.layer1(x)
 
         # x = self.stvit(x)
-        x = self.ema(x)
+        # x = self.ema(x)
 
         x = self.layer2(x)
         x = self.layer3(x)
@@ -491,7 +495,7 @@ class ResNet(nn.Module):
         if self.keep_avg_pool:
             x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        return x
+        return (x + x.mean(dim=1, keepdim=True)) * 0.5
 
 
 def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0,**kwargs):
@@ -516,6 +520,7 @@ class MLP_header(nn.Module):
         x = self.relu(x)
         x = self.fc2(x)
         x = self.relu(x)
+        print('阿里v')
         return x
 
 
