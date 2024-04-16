@@ -399,7 +399,7 @@ class BasicBlock(nn.Module):
         self.block_size = block_size
         self.DropBlock = DropBlock(block_size=self.block_size)
 
-        self.ema = EMA(planes)
+        # self.ema = EMA(planes)
 
     def forward(self, x):
         self.num_batches_tracked += 1
@@ -417,7 +417,7 @@ class BasicBlock(nn.Module):
         out = self.conv3(out)
         out = self.bn3(out)
 
-        out = self.ema(out)
+        # out = self.ema(out)
 
         if self.downsample is not None:
             residual = self.downsample(x)
