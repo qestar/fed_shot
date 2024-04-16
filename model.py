@@ -419,7 +419,6 @@ class BasicBlock(nn.Module):
         out = self.bn3(out)
 
         # out = self.ema(out)
-        print("insert sc")
         out = self.sc(out)
 
         if self.downsample is not None:
