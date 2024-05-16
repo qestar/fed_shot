@@ -1,20 +1,10 @@
-import os
-import itertools
 import collections
 import json
+import os
 from collections import defaultdict
-from tqdm import tqdm
+
 import numpy as np
-import torch
-from torchtext.vocab import vocab, Vectors, GloVe
-
-from embedding.avg import AVG
-from embedding.cxtebd import CXTEBD
-from embedding.wordebd import WORDEBD
-import data.stats as stats
-from data.utils import tprint
-
-from transformers import BertTokenizer
+from torchtext.vocab import vocab, GloVe, Vocab
 
 
 def _get_20newsgroup_classes():
@@ -425,35 +415,35 @@ def load_dataset(datadir, dataset, args=None):
     print('Loading data')
     all_data = _load_json('./data/text-data/' + dataset + '.json')
 
-    print('Loading word vectors')
-    path = os.path.join('./', 'wiki.en.vec')
-    if not os.path.exists(path):
-        # Download the word vector and save it locally:
-        print('Downloading word vectors')
-        import urllib.request
-        urllib.request.urlretrieve(
-            'https://dl.fbaipublicfiles.com/fasttext/vectors-wiki/wiki.en.vec',
-            path)
-
+    # print('Loading word vectors')
+    # path = os.path.join('./', 'wiki.en.vec')
+    # if not os.path.exists(path):
+    #     # Download the word vector and save it locally:
+    #     print('Downloading word vectors')
+    #     import urllib.request
+    #     urllib.request.urlretrieve(
+    #         'https://dl.fbaipublicfiles.com/fasttext/vectors-wiki/wiki.en.vec',
+    #         path)
     #vectors = Vectors('wiki.en.vec', cache='./')
-    vectors=GloVe(name='42B', dim=300)
-    print(vectors)
-    Vocab = vocab( collections.Counter(_read_words(all_data)),  # ,vectors=vectors,
-                  specials=['<pad>', '<unk>'],
-                  min_freq=5)
-    # Vocab.insert_token('<pad>',32135)
-    print('vocab size:', len(Vocab.get_stoi()))
-    Vocab.set_default_index(32137)
 
-    print(len(vectors.stoi))
+    cache_dir = './data'
+    vectors=GloVe(name='42B', dim=300, cache=cache_dir)
+    print(vectors)
+    vocab = vectors
+    # vocab = Vocab(collections.Counter(_read_words(all_data)), vectors=vectors, min_freq=5)
+    # Vocab.insert_token('<pad>',32135)
+    # print('vocab size:', len(vocab.get_stoi()))
+    # vocab.set_default_index(32137)
+
+    # print(len(vectors.stoi))
 
 
 
 
 
     # print word embedding statistics
-    # wv_size = vocab.vectors.size()
-    wv_size = vectors.vectors.size()
+    wv_size = vocab.vectors.size()
+    # wv_size = vectors.vectors.size()
     print('Total num. of words: {}, word vector dimension: {}'.format(
         wv_size[0],
         wv_size[1]))
@@ -489,4 +479,4 @@ def load_dataset(datadir, dataset, args=None):
 
     # stats.precompute_stats(train_data, val_data, test_data, args)
 
-    return train_data, val_data, test_data  # , vocab
+    return train_data, val_data, test_data, vocab

@@ -75,10 +75,11 @@ def load_miniImageNet(datadir):
 
 def load_text_data(datadir, dataset):
     from data.loader import load_dataset
-    train_data, val_data, test_data = load_dataset(datadir, dataset)
+    train_data, val_data, test_data, vocab = load_dataset(datadir, dataset)
 
     return (np.concatenate([train_data['text'], train_data['text_len'].reshape(-1, 1)], -1), train_data['label'],
-            np.concatenate([test_data['text'], test_data['text_len'].reshape(-1, 1)], -1), test_data['label'])
+            np.concatenate([test_data['text'], test_data['text_len'].reshape(-1, 1)], -1), test_data['label'],
+            vocab)
 
 
 def load_tinyimagenet_data(datadir):
@@ -143,7 +144,7 @@ def partition_data(dataset, datadir, logdir, partition, n_parties, beta=0.4):
     elif dataset == 'miniImageNet':
         X_train, y_train, X_test, y_test = load_miniImageNet(datadir)
     elif dataset == '20newsgroup' or dataset == 'fewrel' or dataset=='huffpost':
-        X_train, y_train, X_test, y_test = load_text_data(datadir, dataset)
+        X_train, y_train, X_test, y_test, vocab = load_text_data(datadir, dataset)
 
     elif dataset == 'tinyimagenet':
         X_train, y_train, X_test, y_test = load_tinyimagenet_data(datadir)
