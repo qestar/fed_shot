@@ -137,7 +137,7 @@ def get_args():
     parser.add_argument('--fine_tune_steps', type=int, default=5, help='number of meta-learning steps (5)')
     parser.add_argument('--fine_tune_lr', type=float, default=0.01, help='number of meta-learning lr (0.05)')
     parser.add_argument('--meta_lr', type=float, default=0.1/100, help='number of meta-learning lr (0.05)')
-    parser.add_argument('--comm_round', type=int, default=20, help='number of maximum communication round')
+    parser.add_argument('--comm_round', type=int, default=100, help='number of maximum communication round')
     parser.add_argument('--optimizer', type=str, default='adam', help='the optimizer')
     
     
