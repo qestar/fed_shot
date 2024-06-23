@@ -12,7 +12,7 @@ import random
 import time
 from sklearn.linear_model import LogisticRegression
 from sklearn import metrics
-
+from DKD import dkd_loss
 from PIL import Image
 
 from model import *
@@ -120,7 +120,7 @@ def get_args():
     parser.add_argument('--partition', type=str, default='noniid', help='the data partitioning strategy')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate (default: 0.01, 0.0005, 0.005)')
     parser.add_argument('--epochs', type=int, default=10, help='number of local epochs')
-    parser.add_argument('--n_parties', type=int, default=1, help='number of workers in a distributed cluster')
+    parser.add_argument('--n_parties', type=int, default=10, help='number of workers in a distributed cluster')
     parser.add_argument('--alg', type=str, default='fedavg',
                         help='communication strategy: fedavg/fedprox')
     
@@ -181,7 +181,7 @@ def get_args():
     parser.add_argument('--sample_fraction', type=float, default=1.0, help='how many clients are sampled in each round')
     parser.add_argument('--load_model_file', type=str, default=None, help='the model to load as global model')
     parser.add_argument('--load_pool_file', type=str, default=None, help='the old model pool path to load')
-    parser.add_argument('--load_model_round', type=int, default=None, help='how many rounds have executed for the loaded model')
+    parser.add_argument('--load_model_round', type=int, default=199, help='how many rounds have executed for the loaded model')
     parser.add_argument('--load_first_net', type=int, default=1, help='whether load the first net as old net or not')
     parser.add_argument('--normal_model', type=int, default=0, help='use normal model or aggregate model')
     parser.add_argument('--loss', type=str, default='contrastive')
@@ -274,7 +274,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     loss_mse = nn.MSELoss()
 
     def train_epoch(epoch, mode='train'):
-
+        # 根据数据集定义k, q transform
         if mode == 'train':
 
             if args.dataset=='fewrel' :
@@ -337,16 +337,19 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         if test_only==True:
             K=test_only_k
 
+        # 为支持集，查询集生成label,分别N*k,N*q个
         support_labels = torch.zeros(N * K, dtype=torch.long)
         for i in range(N):
             support_labels[i * K:(i + 1) * K] = i
         query_labels = torch.zeros(N * Q, dtype=torch.long)
         for i in range(N):
             query_labels[i * Q:(i + 1) * Q] = i
+
         if args.device != 'cpu':
             support_labels = support_labels.cuda()
             query_labels = query_labels.cuda()
 
+        # 划分数据集
         if mode == 'train':
             if args.dataset=='FC100':
                 class_dict = fine_split['train']
@@ -459,8 +462,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 for j in range(args.fine_tune_steps):
                     X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
                     loss = loss_ce(out, support_labels)
-                    #loss+=loss_ce(out, out_sup_on_N_class)
-                    #loss+=loss_mse(out_sup_on_N_class.softmax(-1),out.softmax(-1))
+
 
                     net_para = net_new.state_dict()
                     param_require_grad = {}
@@ -485,8 +487,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 #############################
                 # Q=K here update for all-model
                 for j in range(Q):
-                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
-                                                             tau=0.5)
+                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q], tau=0.5)
                     loss_all += contras_loss / Q * 0.1
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
@@ -509,6 +510,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 out_sup_on_N_class = out_all[N * K:, transformed_class_list]
                 out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
                 loss+=loss_ce(out,out_sup_on_N_class)*0.1
+                # loss += dkd_loss(out,out_sup_on_N_class, query_labels, 1.0, 8.0, 4.0)*0.5
+
                 grad = torch.autograd.grad(loss, param_require_grad.values())
                 for key, grad_ in zip(param_require_grad.keys(), grad):
                     net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
@@ -623,26 +626,12 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
     for net_id, net in nets.items():
         print(net_id)
-
-        #net.cuda()
-
         dataidxs = net_dataidx_map[net_id]
-
-        #logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-        
-    
         n_epoch = args.epochs
-        
-        #_,_, train_ds, test_ds = get_dataloader(args.dataset, args.datadir, args.batch_size, len(dataidxs), dataidxs)
-        
-        #X_train_client=train_ds.data
-        #y_train_client=train_ds.target
-        
         X_train_client=X_train[dataidxs]
         y_train_client=y_train[dataidxs]
         
-        #X_test=test_ds.data
-        #y_test=test_ds.target
+
 
 
         if test_only==False:
@@ -691,6 +680,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 
 if __name__ == '__main__':
+    start_time = time.time()
     args = get_args()
     print(args)
     
@@ -880,3 +870,6 @@ if __name__ == '__main__':
             if global_acc > best_acc:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
+
+        end_time = time.time()
+        print(f"Execution time: {end_time - start_time:.6f} seconds")

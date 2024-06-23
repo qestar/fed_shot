@@ -11,8 +11,6 @@ from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
 
 
-
-
 class Unfold(nn.Module):
     def __init__(self, kernel_size=3):
         super().__init__()
@@ -81,143 +79,6 @@ class Attention(nn.Module):
         return x
 
 
-class StokenAttention(nn.Module):
-    def __init__(self, dim, stoken_size, n_iter=1, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0.,
-                 proj_drop=0.):
-        super().__init__()
-
-        self.n_iter = n_iter
-        self.stoken_size = stoken_size
-
-        self.scale = dim ** - 0.5
-
-        self.unfold = Unfold(3)
-        self.fold = Fold(3)
-
-        self.stoken_refine = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                       attn_drop=attn_drop, proj_drop=proj_drop)
-
-    def stoken_forward(self, x):
-        '''
-           x: (B, C, H, W)
-        '''
-        B, C, H0, W0 = x.shape
-        h, w = self.stoken_size
-
-        pad_l = pad_t = 0
-        pad_r = (w - W0 % w) % w
-        pad_b = (h - H0 % h) % h
-        if pad_r > 0 or pad_b > 0:
-            x = F.pad(x, (pad_l, pad_r, pad_t, pad_b))
-
-        _, _, H, W = x.shape
-
-        hh, ww = H // h, W // w
-
-        stoken_features = F.adaptive_avg_pool2d(x, (hh, ww))  # (B, C, hh, ww)
-
-        pixel_features = x.reshape(B, C, hh, h, ww, w).permute(0, 2, 4, 3, 5, 1).reshape(B, hh * ww, h * w, C)
-
-        with torch.no_grad():
-            for idx in range(self.n_iter):
-                stoken_features = self.unfold(stoken_features)  # (B, C*9, hh*ww)
-                stoken_features = stoken_features.transpose(1, 2).reshape(B, hh * ww, C, 9)
-                affinity_matrix = pixel_features @ stoken_features * self.scale  # (B, hh*ww, h*w, 9)
-
-                affinity_matrix = affinity_matrix.softmax(-1)  # (B, hh*ww, h*w, 9)
-
-                affinity_matrix_sum = affinity_matrix.sum(2).transpose(1, 2).reshape(B, 9, hh, ww)
-
-                affinity_matrix_sum = self.fold(affinity_matrix_sum)
-                if idx < self.n_iter - 1:
-                    stoken_features = pixel_features.transpose(-1, -2) @ affinity_matrix  # (B, hh*ww, C, 9)
-
-                    stoken_features = self.fold(stoken_features.permute(0, 2, 3, 1).reshape(B * C, 9, hh, ww)).reshape(
-                        B, C, hh, ww)
-
-                    stoken_features = stoken_features / (affinity_matrix_sum + 1e-12)  # (B, C, hh, ww)
-
-        stoken_features = pixel_features.transpose(-1, -2) @ affinity_matrix  # (B, hh*ww, C, 9)
-
-        stoken_features = self.fold(stoken_features.permute(0, 2, 3, 1).reshape(B * C, 9, hh, ww)).reshape(B, C, hh, ww)
-
-        stoken_features = stoken_features / (affinity_matrix_sum.detach() + 1e-12)  # (B, C, hh, ww)
-
-        stoken_features = self.stoken_refine(stoken_features)
-
-        stoken_features = self.unfold(stoken_features)  # (B, C*9, hh*ww)
-        stoken_features = stoken_features.transpose(1, 2).reshape(B, hh * ww, C, 9)  # (B, hh*ww, C, 9)
-
-        pixel_features = stoken_features @ affinity_matrix.transpose(-1, -2)  # (B, hh*ww, C, h*w)
-
-        pixel_features = pixel_features.reshape(B, hh, ww, C, h, w).permute(0, 3, 1, 4, 2, 5).reshape(B, C, H, W)
-
-        if pad_r > 0 or pad_b > 0:
-            pixel_features = pixel_features[:, :, :H0, :W0]
-
-        return pixel_features
-
-    def direct_forward(self, x):
-        B, C, H, W = x.shape
-        stoken_features = x
-        stoken_features = self.stoken_refine(stoken_features)
-        return stoken_features
-
-    def forward(self, x):
-        if self.stoken_size[0] > 1 or self.stoken_size[1] > 1:
-            return self.stoken_forward(x)
-        else:
-            return self.direct_forward(x)
-
-
-class EMA(nn.Module):
-    def __init__(self, channels, factor=8):
-        super(EMA, self).__init__()
-        self.groups = factor
-        assert channels // self.groups > 0
-        self.softmax = nn.Softmax(-1)
-        self.agp = nn.AdaptiveAvgPool2d((1, 1))
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-        self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)
-        self.conv1x1 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=1, stride=1, padding=0)
-        self.conv3x3 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=3, stride=1, padding=1)
-
-    def forward(self, x):
-        b, c, h, w = x.size()
-        group_x = x.reshape(b * self.groups, -1, h, w)  # b*g,c//g,h,w
-        x_h = self.pool_h(group_x)
-        x_w = self.pool_w(group_x).permute(0, 1, 3, 2)
-        hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))
-        x_h, x_w = torch.split(hw, [h, w], dim=2)
-        x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
-        x2 = self.conv3x3(group_x)
-        x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
-        x12 = x2.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
-        x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
-        x22 = x1.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
-        weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
-        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
-
-class AttnMap(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.act_block = nn.Sequential(
-            nn.Conv2d(dim, dim, 1, 1, 0),
-            MemoryEfficientSwish(),
-            nn.Conv2d(dim, dim, 1, 1, 0)
-        )
-
-    def forward(self, x):
-        return self.act_block(x)
-
-
-
-
-
-
-
-
 def l2_normalize(x):
     norm = x.pow(2).sum(1, keepdim=True).pow(1. / 2)
     out = x.div(norm + 1e-9)
@@ -252,7 +113,6 @@ class DropBlock(nn.Module):
         else:
             return x
 
-
     def _compute_block_mask(self, mask):
         left_padding = int((self.block_size - 1) / 2)
         right_padding = int(self.block_size / 2)
@@ -285,6 +145,8 @@ class DropBlock(nn.Module):
 
         block_mask = 1 - padded_mask  # [:height, :width]
         return block_mask
+
+
 # import pytorch_lightning as pl
 
 # This ResNet network was designed following the practice of the following papers:
@@ -306,8 +168,10 @@ class BasicBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.LeakyReLU(0.1)
         self.conv2 = conv3x3(planes, planes)
+        # self.conv2 = ScConv(planes)
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = conv3x3(planes, planes)
+        # self.conv3 = ScConv(planes)
         self.bn3 = nn.BatchNorm2d(planes)
         self.maxpool = nn.MaxPool2d(stride)
         self.downsample = downsample
@@ -317,9 +181,7 @@ class BasicBlock(nn.Module):
         self.drop_block = drop_block
         self.block_size = block_size
         self.DropBlock = DropBlock(block_size=self.block_size)
-
         # self.ema = EMA(planes)
-        # self.sc = ScConv(planes)
 
     def forward(self, x):
         self.num_batches_tracked += 1
@@ -330,15 +192,14 @@ class BasicBlock(nn.Module):
         out = self.bn1(out)
         out = self.relu(out)
 
+        # out = self.ema(out)
+
         out = self.conv2(out)
         out = self.bn2(out)
         out = self.relu(out)
 
         out = self.conv3(out)
         out = self.bn3(out)
-
-        # out = self.ema(out)
-        # out = self.sc(out)
 
         if self.downsample is not None:
             residual = self.downsample(x)
@@ -375,8 +236,8 @@ class ResNet(nn.Module):
         # self.stvit = StokenAttention(64, stoken_size=[8,8])
 
         if avg_pool:
-            #self.avgpool = nn.AvgPool2d(5, stride=1)
-            self.avgpool=nn.AdaptiveAvgPool2d(1)
+            # self.avgpool = nn.AvgPool2d(5, stride=1)
+            self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.keep_prob = keep_prob
         self.keep_avg_pool = avg_pool
         self.dropout = nn.Dropout(p=1 - self.keep_prob, inplace=False)
@@ -415,11 +276,88 @@ class ResNet(nn.Module):
         return (x + x.mean(dim=1, keepdim=True)) * 0.5
 
 
-def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0,**kwargs):
+def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0, **kwargs):
     """Constructs a ResNet-12 model.
     """
-    model = ResNet(BasicBlock, keep_prob=keep_prob, avg_pool=avg_pool,drop_rate=drop_rate, **kwargs)
+    model = ResNet(BasicBlock, keep_prob=keep_prob, avg_pool=avg_pool, drop_rate=drop_rate, **kwargs)
     return model
+
+
+class EMA(nn.Module):
+    def __init__(self, channels, factor=8):
+        super(EMA, self).__init__()
+        self.groups = factor
+        assert channels // self.groups > 0
+        self.softmax = nn.Softmax(-1)
+        self.agp = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)
+        self.conv1x1 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=1, stride=1, padding=0)
+        # self.conv3x3 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=3, stride=1, padding=1)
+
+        self.up_channel = up_channel = int(0.6 * channels // self.groups)
+        self.low_channel = low_channel = channels // self.groups - up_channel
+        self.squeeze1 = nn.Conv2d(up_channel, up_channel // 2, kernel_size=1, bias=False)
+        self.squeeze2 = nn.Conv2d(low_channel, low_channel // 2, kernel_size=1, bias=False)
+        # UP
+        self.GWC = nn.Conv2d(up_channel // 2, channels // self.groups, kernel_size=3, stride=1,
+                             padding=3 // 2, groups=2)
+        self.PWC1 = nn.Conv2d(up_channel // 2, channels // self.groups, kernel_size=1, bias=False)
+        # low
+        self.PWC2 = nn.Conv2d(low_channel // 2, channels // self.groups - low_channel // 2, kernel_size=1,
+                              bias=False)
+        self.advavg = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        group_x = x.reshape(b * self.groups, -1, h, w)  # b*g,c//g,h,w
+        x_h = self.pool_h(group_x)
+        x_w = self.pool_w(group_x).permute(0, 1, 3, 2)
+        hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))
+        x_h, x_w = torch.split(hw, [h, w], dim=2)
+        x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
+
+        # x2 = self.conv3x3(group_x)
+        # # x2 = self.GWC(group_x) + self.PWC1(group_x)
+
+        # Split
+        up, low = torch.split(group_x, [self.up_channel, self.low_channel], dim=1)
+        up, low = self.squeeze1(up), self.squeeze2(low)
+        # Transform
+        Y1 = self.GWC(up) + self.PWC1(up)
+        Y2 = torch.cat([self.PWC2(low), low], dim=1)
+
+        # Fuse
+        out = torch.cat([Y1, Y2], dim=1)
+
+        out = self.softmax(self.agp(out))
+
+        out1, out2 = torch.split(out, out.size(1) // 2, dim=1)
+
+        # x2 =  out1 + out2
+        # print("x2******************************* ", x2.shape)
+
+        Y1 = Y1.reshape(b * self.groups, c // self.groups, -1)
+
+        Y2 = Y2.reshape(b * self.groups, c // self.groups, -1)
+
+        out1 = out1.reshape(b * self.groups, -1, 1).permute(0, 2, 1)
+
+        out2 = out2.reshape(b * self.groups, -1, 1).permute(0, 2, 1)
+        Y_fin = Y1 + Y2
+
+        x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+
+        # x12 = x2.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        # print("x12*******************************",x12.shape)
+        # x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        # print("x21*******************************",x21.shape)
+        x22 = x1.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+
+        weights = (torch.matmul(x11, Y_fin) + + torch.matmul(out1, x22) + torch.matmul(out2, x22)).reshape(
+            b * self.groups, 1, h, w)
+        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
 
 
 class MLP_header(nn.Module):
@@ -1088,13 +1026,23 @@ class ModelFed_Adp(nn.Module):
             num_ftrs = 84
         elif base_model == 'resnet12':
 
-            if args.dataset=='FC100':
+            if args.dataset == 'FC100':
                 self.features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2)
-                #num_ftrs=2560
-                num_ftrs=640
+                # num_ftrs=2560
+                num_ftrs = 640
             else:
                 self.features = resnet12(avg_pool=True, drop_rate=0.1)
-                #num_ftrs = 16000
+                # num_ftrs = 16000
+                num_ftrs = 640
+        elif base_model == 'resnet12_ema':
+
+            if args.dataset == 'FC100':
+                self.features = resnet12_ema(avg_pool=True, drop_rate=0.1, dropblock_size=2)
+                # num_ftrs=2560
+                num_ftrs = 640
+            else:
+                self.features = resnet12_ema(avg_pool=True, drop_rate=0.1)
+                # num_ftrs = 16000
                 num_ftrs = 640
 
         # summary(self.features.to('cuda:0'), (3,32,32))
@@ -1109,7 +1057,7 @@ class ModelFed_Adp(nn.Module):
         self.all_classify = nn.Linear(out_dim, total_classes)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
-        self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
         print(self.state_dict().keys())
 
     def _get_basemodel(self, model_name):
@@ -1127,12 +1075,12 @@ class ModelFed_Adp(nn.Module):
         # print("h size:", h.size())
         ebd = h.squeeze()
         # print("h after:", h)
-        #x = self.l1(h)
-        #x = F.relu(x)
-        #x = self.l2(x)
+        # x = self.l1(h)
+        # x = F.relu(x)
+        # x = self.l2(x)
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.transformer(ebd)
             y = self.few_classify(x)
         else:
             x = self.l1(ebd)
@@ -1186,12 +1134,12 @@ class LSTMAtt(nn.Module):
         # ebd = WORDEBD(args.finetune_ebd)
 
         self.args = args
-        if args.dataset=='20newsgroup':
-            self.max_text_len=500
-        elif args.dataset=='fewrel':
-            self.max_text_len=38
-        elif args.dataset=='huffpost':
-            self.max_text_len=44
+        if args.dataset == '20newsgroup':
+            self.max_text_len = 500
+        elif args.dataset == 'fewrel':
+            self.max_text_len = 38
+        elif args.dataset == 'huffpost':
+            self.max_text_len = 44
 
         self.ebd = ebd
         # self.aux = get_embedding(args)
@@ -1219,11 +1167,9 @@ class LSTMAtt(nn.Module):
         self.all_classify = nn.Linear(out_dim, total_classes)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4)
-        self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
 
         print(self.state_dict().keys())
-
-
 
     def _attention(self, x, text_len):
         '''
@@ -1258,7 +1204,6 @@ class LSTMAtt(nn.Module):
         # Apply the word embedding, result:  batch_size, doc_len, embedding_dim
         ebd = self.ebd(data[:, :self.max_text_len])
 
-
         # add augmented embedding if applicable
         # aux = self.aux(data)
 
@@ -1270,25 +1215,23 @@ class LSTMAtt(nn.Module):
         ebd = self.rnn(ebd, data[:, self.max_text_len])
         # result: batch_size, max_text_len, 2*rnn_dim
 
-        #ebd=F.dropout(ebd,p=0.8, training=self.training)
+        # ebd=F.dropout(ebd,p=0.8, training=self.training)
 
         # apply attention
         alpha = self._attention(ebd, data[:, self.max_text_len])
 
         # aggregate
         ebd = torch.sum(ebd * alpha.unsqueeze(-1), dim=1)
-        #ebd = ebd.mean(1)
+        # ebd = ebd.mean(1)
 
-        #x=F.dropout(ebd, p=0.5,training=self.training)
+        # x=F.dropout(ebd, p=0.5,training=self.training)
 
-
-        #x = self.l1(ebd)
-        #x = F.relu(x)
-        #x = self.l2(x)
-
+        # x = self.l1(ebd)
+        # x = F.relu(x)
+        # x = self.l2(x)
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.transformer(ebd)
             y = self.few_classify(x)
         else:
             x = self.l1(ebd)
@@ -1357,7 +1300,6 @@ class SRU(nn.Module):
         x_11, x_12 = torch.split(x_1, x_1.size(1) // 2, dim=1)
         x_21, x_22 = torch.split(x_2, x_2.size(1) // 2, dim=1)
         return torch.cat([x_11 + x_22, x_12 + x_21], dim=1)
-
 
 
 class CRU(nn.Module):
