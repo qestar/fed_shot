@@ -168,10 +168,8 @@ class BasicBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.LeakyReLU(0.1)
         self.conv2 = conv3x3(planes, planes)
-        # self.conv2 = ScConv(planes)
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = conv3x3(planes, planes)
-        # self.conv3 = ScConv(planes)
         self.bn3 = nn.BatchNorm2d(planes)
         self.maxpool = nn.MaxPool2d(stride)
         self.downsample = downsample
@@ -181,7 +179,7 @@ class BasicBlock(nn.Module):
         self.drop_block = drop_block
         self.block_size = block_size
         self.DropBlock = DropBlock(block_size=self.block_size)
-        # self.ema = EMA(planes)
+        self.ema = EMA(planes)
 
     def forward(self, x):
         self.num_batches_tracked += 1
@@ -192,9 +190,9 @@ class BasicBlock(nn.Module):
         out = self.bn1(out)
         out = self.relu(out)
 
-        # out = self.ema(out)
 
         out = self.conv2(out)
+        out = self.ema(out)
         out = self.bn2(out)
         out = self.relu(out)
 
@@ -301,9 +299,9 @@ class EMA(nn.Module):
         self.squeeze1 = nn.Conv2d(up_channel, up_channel // 2, kernel_size=1, bias=False)
         self.squeeze2 = nn.Conv2d(low_channel, low_channel // 2, kernel_size=1, bias=False)
         # UP
-        self.GWC = nn.Conv2d(up_channel // 2, channels // self.groups, kernel_size=3, stride=1,
-                             padding=3 // 2, groups=2)
-        self.PWC1 = nn.Conv2d(up_channel // 2, channels // self.groups, kernel_size=1, bias=False)
+        self.GWC = nn.Conv2d(up_channel // 2, channels // self.groups, kernel_size=5, stride=1,
+                             padding=5 // 2, groups=2)
+        self.PWC1 = nn.Conv2d(up_channel // 2, channels // self.groups, kernel_size=3, bias=False, padding=1)
         # low
         self.PWC2 = nn.Conv2d(low_channel // 2, channels // self.groups - low_channel // 2, kernel_size=1,
                               bias=False)
@@ -318,6 +316,7 @@ class EMA(nn.Module):
         x_h, x_w = torch.split(hw, [h, w], dim=2)
         x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
 
+
         # x2 = self.conv3x3(group_x)
         # # x2 = self.GWC(group_x) + self.PWC1(group_x)
 
@@ -326,6 +325,7 @@ class EMA(nn.Module):
         up, low = self.squeeze1(up), self.squeeze2(low)
         # Transform
         Y1 = self.GWC(up) + self.PWC1(up)
+
         Y2 = torch.cat([self.PWC2(low), low], dim=1)
 
         # Fuse
@@ -335,8 +335,7 @@ class EMA(nn.Module):
 
         out1, out2 = torch.split(out, out.size(1) // 2, dim=1)
 
-        # x2 =  out1 + out2
-        # print("x2******************************* ", x2.shape)
+
 
         Y1 = Y1.reshape(b * self.groups, c // self.groups, -1)
 
@@ -347,17 +346,13 @@ class EMA(nn.Module):
         out2 = out2.reshape(b * self.groups, -1, 1).permute(0, 2, 1)
         Y_fin = Y1 + Y2
 
+
         x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
-
-        # x12 = x2.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
-        # print("x12*******************************",x12.shape)
-        # x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
-        # print("x21*******************************",x21.shape)
         x22 = x1.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
-
-        weights = (torch.matmul(x11, Y_fin) + + torch.matmul(out1, x22) + torch.matmul(out2, x22)).reshape(
+        weights = (torch.matmul(x11, Y1) + torch.matmul(x11, Y2) + torch.matmul(out1, x22) + torch.matmul(out2,
+                                                                                                          x22)).reshape(
             b * self.groups, 1, h, w)
-        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
+        return x * (group_x * weights.sigmoid()).reshape(b, c, h, w)
 
 
 class MLP_header(nn.Module):
@@ -379,121 +374,6 @@ class MLP_header(nn.Module):
         return x
 
 
-class FcNet(nn.Module):
-    """
-    Fully connected network for MNIST classification
-    """
-
-    def __init__(self, input_dim, hidden_dims, output_dim, dropout_p=0.0):
-
-        super().__init__()
-
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
-        self.output_dim = output_dim
-        self.dropout_p = dropout_p
-
-        self.dims = [self.input_dim]
-        self.dims.extend(hidden_dims)
-        self.dims.append(self.output_dim)
-
-        self.layers = nn.ModuleList([])
-
-        for i in range(len(self.dims) - 1):
-            ip_dim = self.dims[i]
-            op_dim = self.dims[i + 1]
-            self.layers.append(
-                nn.Linear(ip_dim, op_dim, bias=True)
-            )
-
-        self.__init_net_weights__()
-
-    def __init_net_weights__(self):
-
-        for m in self.layers:
-            m.weight.data.normal_(0.0, 0.1)
-            m.bias.data.fill_(0.1)
-
-    def forward(self, x):
-
-        x = x.view(-1, self.input_dim)
-
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-
-            # Do not apply ReLU on the final layer
-            if i < (len(self.layers) - 1):
-                x = nn.ReLU(x)
-
-            # if i < (len(self.layers) - 1):  # No dropout on output layer
-            #     x = F.dropout(x, p=self.dropout_p, training=self.training)
-
-        return x
-
-
-class ConvBlock(nn.Module):
-    def __init__(self):
-        super(ConvBlock, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        return x
-
-
-class FCBlock(nn.Module):
-    def __init__(self, input_dim, hidden_dims, output_dim=10):
-        super(FCBlock, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dims[0])
-        self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
-        self.fc3 = nn.Linear(hidden_dims[1], output_dim)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-
-class VGGConvBlocks(nn.Module):
-    '''
-    VGG model
-    '''
-
-    def __init__(self, features, num_classes=10):
-        super(VGGConvBlocks, self).__init__()
-        self.features = features
-        # Initialize weights
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-                m.bias.data.zero_()
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        return x
-
-
-class FCBlockVGG(nn.Module):
-    def __init__(self, input_dim, hidden_dims, output_dim=10):
-        super(FCBlockVGG, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dims[0])
-        self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
-        self.fc3 = nn.Linear(hidden_dims[1], output_dim)
-
-    def forward(self, x):
-        x = F.dropout(x)
-        x = F.relu(self.fc1(x))
-        x = F.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
 
 
 class SimpleCNN_header(nn.Module):
@@ -556,16 +436,7 @@ class SimpleCNN(nn.Module):
         return x
 
 
-# a simple perceptron model for generated 3D data
-class PerceptronModel(nn.Module):
-    def __init__(self, input_dim=3, output_dim=2):
-        super(PerceptronModel, self).__init__()
 
-        self.fc1 = nn.Linear(input_dim, output_dim)
-
-    def forward(self, x):
-        x = self.fc1(x)
-        return x
 
 
 class SimpleCNNMNIST_header(nn.Module):
@@ -651,354 +522,13 @@ class SimpleCNNContainer(nn.Module):
 
 
 ############## LeNet for MNIST ###################
-class LeNet(nn.Module):
-    def __init__(self):
-        super(LeNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 20, 5, 1)
-        self.conv2 = nn.Conv2d(20, 50, 5, 1)
-        self.fc1 = nn.Linear(4 * 4 * 50, 500)
-        self.fc2 = nn.Linear(500, 10)
-        self.ceriation = nn.CrossEntropyLoss()
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = F.max_pool2d(x, 2, 2)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.max_pool2d(x, 2, 2)
-        x = F.relu(x)
-        x = x.view(-1, 4 * 4 * 50)
-        x = self.fc1(x)
-        x = self.fc2(x)
-        return x
 
 
-class LeNetContainer(nn.Module):
-    def __init__(self, num_filters, kernel_size, input_dim, hidden_dims, output_dim=10):
-        super(LeNetContainer, self).__init__()
-        self.conv1 = nn.Conv2d(1, num_filters[0], kernel_size, 1)
-        self.conv2 = nn.Conv2d(num_filters[0], num_filters[1], kernel_size, 1)
-
-        self.fc1 = nn.Linear(input_dim, hidden_dims[0])
-        self.fc2 = nn.Linear(hidden_dims[0], output_dim)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = F.max_pool2d(x, 2, 2)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.max_pool2d(x, 2, 2)
-        x = F.relu(x)
-        x = x.view(-1, x.size()[1] * x.size()[2] * x.size()[3])
-        x = self.fc1(x)
-        x = self.fc2(x)
-        return x
 
 
-### Moderate size of CNN for CIFAR-10 dataset
-class ModerateCNN(nn.Module):
-    def __init__(self, output_dim=10):
-        super(ModerateCNN, self).__init__()
-        self.conv_layer = nn.Sequential(
-            # Conv Layer block 1
-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Conv Layer block 2
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.05),
-
-            # Conv Layer block 3
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-
-        self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
-            # nn.Linear(4096, 1024),
-            nn.Linear(4096, 512),
-            nn.ReLU(inplace=True),
-            # nn.Linear(1024, 512),
-            nn.Linear(512, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.1),
-            nn.Linear(512, output_dim)
-        )
-
-    def forward(self, x):
-        x = self.conv_layer(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc_layer(x)
-        return x
 
 
-### Moderate size of CNN for CIFAR-10 dataset
-class ModerateCNNCeleba(nn.Module):
-    def __init__(self):
-        super(ModerateCNNCeleba, self).__init__()
-        self.conv_layer = nn.Sequential(
-            # Conv Layer block 1
-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
 
-            # Conv Layer block 2
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            # nn.Dropout2d(p=0.05),
-
-            # Conv Layer block 3
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-
-        self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
-            # nn.Linear(4096, 1024),
-            nn.Linear(4096, 512),
-            nn.ReLU(inplace=True),
-            # nn.Linear(1024, 512),
-            nn.Linear(512, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.1),
-            nn.Linear(512, 2)
-        )
-
-    def forward(self, x):
-        x = self.conv_layer(x)
-        # x = x.view(x.size(0), -1)
-        x = x.view(-1, 4096)
-        x = self.fc_layer(x)
-        return x
-
-
-class ModerateCNNMNIST(nn.Module):
-    def __init__(self):
-        super(ModerateCNNMNIST, self).__init__()
-        self.conv_layer = nn.Sequential(
-            # Conv Layer block 1
-            nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Conv Layer block 2
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.05),
-
-            # Conv Layer block 3
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-
-        self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
-            nn.Linear(2304, 1024),
-            nn.ReLU(inplace=True),
-            nn.Linear(1024, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.1),
-            nn.Linear(512, 10)
-        )
-
-    def forward(self, x):
-        x = self.conv_layer(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc_layer(x)
-        return x
-
-
-class ModerateCNNContainer(nn.Module):
-    def __init__(self, input_channels, num_filters, kernel_size, input_dim, hidden_dims, output_dim=10):
-        super(ModerateCNNContainer, self).__init__()
-
-        ##
-        self.conv_layer = nn.Sequential(
-            # Conv Layer block 1
-            nn.Conv2d(in_channels=input_channels, out_channels=num_filters[0], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=num_filters[0], out_channels=num_filters[1], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Conv Layer block 2
-            nn.Conv2d(in_channels=num_filters[1], out_channels=num_filters[2], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=num_filters[2], out_channels=num_filters[3], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.05),
-
-            # Conv Layer block 3
-            nn.Conv2d(in_channels=num_filters[3], out_channels=num_filters[4], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=num_filters[4], out_channels=num_filters[5], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-
-        self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
-            nn.Linear(input_dim, hidden_dims[0]),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dims[0], hidden_dims[1]),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.1),
-            nn.Linear(hidden_dims[1], output_dim)
-        )
-
-    def forward(self, x):
-        x = self.conv_layer(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc_layer(x)
-        return x
-
-    def forward_conv(self, x):
-        x = self.conv_layer(x)
-        x = x.view(x.size(0), -1)
-        return x
-
-
-class ModelFedCon(nn.Module):
-
-    def __init__(self, base_model, out_dim, n_classes, net_configs=None):
-        super(ModelFedCon, self).__init__()
-
-        if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
-            basemodel = ResNet50_cifar10()
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
-            num_ftrs = basemodel.fc.in_features
-        elif base_model == "resnet18-cifar10" or base_model == "resnet18":
-            basemodel = ResNet18_cifar10()
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
-            num_ftrs = basemodel.fc.in_features
-        elif base_model == "mlp":
-            self.features = MLP_header()
-            num_ftrs = 512
-        elif base_model == 'simple-cnn':
-            self.features = SimpleCNN_header(input_dim=(16 * 5 * 5), hidden_dims=[120, 84], output_dim=n_classes)
-            num_ftrs = 84
-        elif base_model == 'simple-cnn-mnist':
-            self.features = SimpleCNNMNIST_header(input_dim=(16 * 4 * 4), hidden_dims=[120, 84], output_dim=n_classes)
-            num_ftrs = 84
-
-        # summary(self.features.to('cuda:0'), (3,32,32))
-        # print("features:", self.features)
-        # projection MLP
-        self.l1 = nn.Linear(num_ftrs, num_ftrs)
-        self.l2 = nn.Linear(num_ftrs, out_dim)
-
-        # last layer
-        self.l3 = nn.Linear(out_dim, n_classes)
-
-    def _get_basemodel(self, model_name):
-        try:
-            model = self.model_dict[model_name]
-            # print("Feature extractor:", model_name)
-            return model
-        except:
-            raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
-
-    def forward(self, x):
-        h = self.features(x)
-        # print("h before:", h)
-        # print("h size:", h.size())
-        h = h.squeeze()
-        # print("h after:", h)
-        x = self.l1(h)
-        x = F.relu(x)
-        x = self.l2(x)
-
-        y = self.l3(x)
-        return h, x, y
-
-
-class ModelFedCon_noheader(nn.Module):
-
-    def __init__(self, base_model, out_dim, n_classes, net_configs=None):
-        super(ModelFedCon_noheader, self).__init__()
-
-        if base_model == "resnet50":
-            basemodel = models.resnet50(pretrained=False)
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
-            num_ftrs = basemodel.fc.in_features
-        elif base_model == "resnet18":
-            basemodel = models.resnet18(pretrained=False)
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
-            num_ftrs = basemodel.fc.in_features
-        elif base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel":
-            basemodel = ResNet50_cifar10()
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
-            num_ftrs = basemodel.fc.in_features
-        elif base_model == "resnet18-cifar10":
-            basemodel = ResNet18_cifar10()
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
-            num_ftrs = basemodel.fc.in_features
-        elif base_model == "mlp":
-            self.features = MLP_header()
-            num_ftrs = 512
-        elif base_model == 'simple-cnn':
-            self.features = SimpleCNN_header(input_dim=(16 * 5 * 5), hidden_dims=[120, 84], output_dim=n_classes)
-            num_ftrs = 84
-        elif base_model == 'simple-cnn-mnist':
-            self.features = SimpleCNNMNIST_header(input_dim=(16 * 4 * 4), hidden_dims=[120, 84], output_dim=n_classes)
-            num_ftrs = 84
-
-        # summary(self.features.to('cuda:0'), (3,32,32))
-        # print("features:", self.features)
-        # projection MLP
-        # self.l1 = nn.Linear(num_ftrs, num_ftrs)
-        # self.l2 = nn.Linear(num_ftrs, out_dim)
-
-        # last layer
-        self.l3 = nn.Linear(num_ftrs, n_classes)
-
-    def _get_basemodel(self, model_name):
-        try:
-            model = self.model_dict[model_name]
-            # print("Feature extractor:", model_name)
-            return model
-        except:
-            raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
-
-    def forward(self, x):
-        h = self.features(x)
-        # print("h before:", h)
-        # print("h size:", h.size())
-        h = h.squeeze()
-        # print("h after:", h)
-        # x = self.l1(h)
-        # x = F.relu(x)
-        # x = self.l2(x)
-
-        y = self.l3(h)
-        return h, h, y
 
 
 class ModelFed_Adp(nn.Module):
@@ -1034,16 +564,7 @@ class ModelFed_Adp(nn.Module):
                 self.features = resnet12(avg_pool=True, drop_rate=0.1)
                 # num_ftrs = 16000
                 num_ftrs = 640
-        elif base_model == 'resnet12_ema':
 
-            if args.dataset == 'FC100':
-                self.features = resnet12_ema(avg_pool=True, drop_rate=0.1, dropblock_size=2)
-                # num_ftrs=2560
-                num_ftrs = 640
-            else:
-                self.features = resnet12_ema(avg_pool=True, drop_rate=0.1)
-                # num_ftrs = 16000
-                num_ftrs = 640
 
         # summary(self.features.to('cuda:0'), (3,32,32))
         # print("features:", self.features)
@@ -1090,40 +611,7 @@ class ModelFed_Adp(nn.Module):
         return ebd, x, y
 
 
-# class WORDEBD(nn.Module):
-#     '''
-#         An embedding layer that maps the token id into its corresponding word
-#         embeddings. The word embeddings are kept as fixed once initialized.
-#     '''
-#
-#     def __init__(self, finetune_ebd):
-#         super(WORDEBD, self).__init__()
-#         #vectors = Vectors('wiki.en.vec', cache='./')
-#         vectors = GloVe(name='42B', dim=300)
-#
-#         self.vocab_size, self.embedding_dim = vectors.vectors.size()
-#         self.embedding_layer = nn.Embedding(
-#             self.vocab_size, self.embedding_dim)
-#         self.embedding_layer.weight.data = vectors.vectors
-#
-#         self.finetune_ebd = finetune_ebd
-#
-#         if self.finetune_ebd:
-#             self.embedding_layer.weight.requires_grad = True
-#         else:
-#             self.embedding_layer.weight.requires_grad = False
-#
-#     def forward(self, data, weights=None):
-#         '''
-#             @param text: batch_size * max_text_len
-#             @return output: batch_size * max_text_len * embedding_dim
-#         '''
-#         if (weights is None) or (self.finetune_ebd == False):
-#             return self.embedding_layer(data)
-#
-#         else:
-#             return F.embedding(data['text'],
-#                                weights['ebd.embedding_layer.weight'])
+
 
 
 class LSTMAtt(nn.Module):
@@ -1241,128 +729,3 @@ class LSTMAtt(nn.Module):
         return ebd, x, y
 
 
-# ScConv
-import torch
-import torch.nn.functional as F
-import torch.nn as nn
-
-
-class GroupBatchnorm2d(nn.Module):
-    def __init__(self, c_num: int,
-                 group_num: int = 16,
-                 eps: float = 1e-10
-                 ):
-        super(GroupBatchnorm2d, self).__init__()
-        assert c_num >= group_num
-        self.group_num = group_num
-        self.weight = nn.Parameter(torch.randn(c_num, 1, 1))
-        self.bias = nn.Parameter(torch.zeros(c_num, 1, 1))
-        self.eps = eps
-
-    def forward(self, x):
-        N, C, H, W = x.size()
-        x = x.view(N, self.group_num, -1)
-        mean = x.mean(dim=2, keepdim=True)
-        std = x.std(dim=2, keepdim=True)
-        x = (x - mean) / (std + self.eps)
-        x = x.view(N, C, H, W)
-        return x * self.weight + self.bias
-
-
-class SRU(nn.Module):
-    def __init__(self,
-                 oup_channels: int,
-                 group_num: int = 16,
-                 gate_treshold: float = 0.5,
-                 torch_gn: bool = False
-                 ):
-        super().__init__()
-
-        self.gn = nn.GroupNorm(num_channels=oup_channels, num_groups=group_num) if torch_gn else GroupBatchnorm2d(
-            c_num=oup_channels, group_num=group_num)
-        self.gate_treshold = gate_treshold
-        self.sigomid = nn.Sigmoid()
-
-    def forward(self, x):
-        gn_x = self.gn(x)
-        w_gamma = self.gn.weight / torch.sum(self.gn.weight)
-        w_gamma = w_gamma.view(1, -1, 1, 1)
-        reweigts = self.sigomid(gn_x * w_gamma)
-        # Gate
-        info_mask = reweigts >= self.gate_treshold
-        noninfo_mask = reweigts < self.gate_treshold
-        x_1 = info_mask * gn_x
-        x_2 = noninfo_mask * gn_x
-        x = self.reconstruct(x_1, x_2)
-        return x
-
-    def reconstruct(self, x_1, x_2):
-        x_11, x_12 = torch.split(x_1, x_1.size(1) // 2, dim=1)
-        x_21, x_22 = torch.split(x_2, x_2.size(1) // 2, dim=1)
-        return torch.cat([x_11 + x_22, x_12 + x_21], dim=1)
-
-
-class CRU(nn.Module):
-    '''
-    alpha: 0<alpha<1
-    '''
-
-    def __init__(self,
-                 op_channel: int,
-                 alpha: float = 1 / 2,
-                 squeeze_radio: int = 2,
-                 group_size: int = 2,
-                 group_kernel_size: int = 3,
-                 ):
-        super().__init__()
-        self.up_channel = up_channel = int(alpha * op_channel)
-        self.low_channel = low_channel = op_channel - up_channel
-        self.squeeze1 = nn.Conv2d(up_channel, up_channel // squeeze_radio, kernel_size=1, bias=False)
-        self.squeeze2 = nn.Conv2d(low_channel, low_channel // squeeze_radio, kernel_size=1, bias=False)
-        # up
-        self.GWC = nn.Conv2d(up_channel // squeeze_radio, op_channel, kernel_size=group_kernel_size, stride=1,
-                             padding=group_kernel_size // 2, groups=group_size)
-        self.PWC1 = nn.Conv2d(up_channel // squeeze_radio, op_channel, kernel_size=1, bias=False)
-        # low
-        self.PWC2 = nn.Conv2d(low_channel // squeeze_radio, op_channel - low_channel // squeeze_radio, kernel_size=1,
-                              bias=False)
-        self.advavg = nn.AdaptiveAvgPool2d(1)
-
-    def forward(self, x):
-        # Split
-        up, low = torch.split(x, [self.up_channel, self.low_channel], dim=1)
-        up, low = self.squeeze1(up), self.squeeze2(low)
-        # Transform
-        Y1 = self.GWC(up) + self.PWC1(up)
-        Y2 = torch.cat([self.PWC2(low), low], dim=1)
-        # Fuse
-        out = torch.cat([Y1, Y2], dim=1)
-        out = F.softmax(self.advavg(out), dim=1) * out
-        out1, out2 = torch.split(out, out.size(1) // 2, dim=1)
-        return out1 + out2
-
-
-class ScConv(nn.Module):
-    def __init__(self,
-                 op_channel: int,
-                 group_num: int = 4,
-                 gate_treshold: float = 0.5,
-                 alpha: float = 1 / 2,
-                 squeeze_radio: int = 2,
-                 group_size: int = 2,
-                 group_kernel_size: int = 3,
-                 ):
-        super().__init__()
-        self.SRU = SRU(op_channel,
-                       group_num=group_num,
-                       gate_treshold=gate_treshold)
-        self.CRU = CRU(op_channel,
-                       alpha=alpha,
-                       squeeze_radio=squeeze_radio,
-                       group_size=group_size,
-                       group_kernel_size=group_kernel_size)
-
-    def forward(self, x):
-        x = self.SRU(x)
-        x = self.CRU(x)
-        return x

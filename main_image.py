@@ -261,7 +261,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     #logger.info('Training network %s' % str(net_id))
     #logger.info('n_training: %d' % X_train_client.shape[0])
     #logger.info('n_test: %d' % X_test.shape[0])
-    
+
     if args_optimizer == 'adam':
         optimizer = optim.Adam( net.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
@@ -451,18 +451,19 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             out_query=X_out_all[N*K:].reshape([N,Q,-1]).transpose(0,1)
 
 
-
-            # _, _, out_all = net(X_total_sup, all_classify=True)
-
-
-
             if args.fine_tune_steps>0:
                 net_new = copy.deepcopy(net)
 
                 for j in range(args.fine_tune_steps):
                     X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
-                    loss = loss_ce(out, support_labels)
 
+                    a, b, out_test = net_new(X_total_sup)
+                    out_log = F.log_softmax(out, dim=1)
+                    # out_test_log = F.log_softmax(out_test, dim=1)
+                    # loss1 = loss_ce(out, support_labels)
+                    # loos2 = loss_ce(out_test, support_labels)
+                    # loss = 0.5 * F.kl_div(out_log, out_test_log, reduction='batchmean') + 0.5 * (loss1 + loos2)
+                    loss = loss_ce(out, support_labels)
 
                     net_para = net_new.state_dict()
                     param_require_grad = {}
@@ -480,13 +481,52 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
                     net_new.load_state_dict(net_para)
 
+                    # for j in range(args.fine_tune_steps):
+                    #     X_out_sup, X_transformer_out_sup, out = net_tmp(X_total_sup)
+                    #     a, b, out_test = net_tmp(X_total_sup)
+                    #     loss1 = loss_ce(out, support_labels)
+                    #     loos2 = loss_ce(out_test, support_labels)
+                    #     loss = 0.5 * F.kl_div(out, out_test) + 0.5 * (loss1 + loos2)
+                    #     # loss = loss_ce(out, support_labels)
+                    #
+                    #     net_para = net_tmp.state_dict()
+                    #     param_require_grad = {}
+                    #     for key, param in net_tmp.named_parameters():
+                    #         if key == 'few_classify.weight' or key == 'few_classify.bias':
+                    #             # if key !='all_classify.weight' and key !='all_classify.bias':
+                    #             if param.requires_grad:
+                    #                 param_require_grad[key] = param
+                    #     grad = torch.autograd.grad(loss, param_require_grad.values(), allow_unused=True)
+                    #     for key, grad_ in zip(param_require_grad.keys(), grad):
+                    #         if grad_ == None: continue
+                    #         net_para[key] = net_para[key] - args.fine_tune_lr * grad_
+                    #     # net_para = list(
+                    #     #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
+                    #     # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
+                    #     net_tmp.load_state_dict(net_para)
+
                 X_out_query, _, out = net_new(X_total_query)
+
+                # net_para_ori = net_tmp.state_dict()
+                # param_require_grad = {}
+                # for key, param in net_tmp.named_parameters():
+                #     if key == 'few_classify.weight' or key == 'few_classify.bias' or 'transformer' in key:
+                #         # if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
+                #         param_require_grad[key] = param
+                # tmp_X_out_query, tmp_t, tmp_out = net_tmp(X_out_query)
+                # loss_tmp = loss_ce(tmp_out, query_labels)
+                # grad = torch.autograd.grad(loss_tmp, param_require_grad.values())
+                # for key, grad_ in zip(param_require_grad.keys(), grad):
+                #     net_para_ori[key] = net_para_ori[key] - args.meta_lr * grad_
+                # net_tmp.load_state_dict(net_para_ori)
+
                 X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
 
                 X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
                 #############################
                 # Q=K here update for all-model
                 for j in range(Q):
+                    # X_transformer_out_sup为net_new在支持集上的输出，out_sup为net在支持集上的输出
                     contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q], tau=0.5)
                     loss_all += contras_loss / Q * 0.1
                 loss_all += loss_ce(out_all, y_total)
@@ -509,8 +549,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 loss = loss_ce(out, query_labels)
                 out_sup_on_N_class = out_all[N * K:, transformed_class_list]
                 out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
-                loss+=loss_ce(out,out_sup_on_N_class)*0.1
-                # loss += dkd_loss(out,out_sup_on_N_class, query_labels, 1.0, 8.0, 4.0)*0.5
+                # loss+=loss_ce(out,out_sup_on_N_class)*0.1
+                loss += dkd_loss(out,out_sup_on_N_class, query_labels, 1.0, 8.0, 4.0)*0.5
 
                 grad = torch.autograd.grad(loss, param_require_grad.values())
                 for key, grad_ in zip(param_require_grad.keys(), grad):
@@ -519,8 +559,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 ##################################
                 del net_new,X_out_query, out
 
-            if np.random.rand() < 0.005:
-                print('loss: {:.4f}'.format(loss_all.item()))
+            # if np.random.rand() < 0.005:
+            #     print('loss: {:.4f}'.format(loss_all.item()))
 
 
             acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
@@ -582,9 +622,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         accs_train=[]
         for epoch in range(args.num_train_tasks):
             accs_train.append(train_epoch(epoch))
-            if np.random.rand() < 0.05:
-                logger.info("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
-                print("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
+            # if np.random.rand() < 0.05:
+            #     logger.info("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
+            #     print("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
 
 
         accs=[]
@@ -611,8 +651,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         return np.mean(accs), torch.cat(max_values,0), torch.cat(indices,0)
 
-    if np.random.rand()<0.3:
-        print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
+    # if np.random.rand()<0.3:
+    #     print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
 
     return  np.mean(accs)
@@ -635,7 +675,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 
         if test_only==False:
-            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
+            testacc = train_net_few_shot_new(net_id, net,n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
                                         device=device, test_only=False)
         else:
             #np.random.seed(1)
@@ -841,23 +881,25 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            for net_id, net in enumerate(nets_this_round.values()):
-                net_para = net.state_dict()
-                if net_id == 0:
-                    for key in net_para:
-                        global_w[key] = net_para[key] * fed_avg_freqs[net_id]
-                else:
-                    for key in net_para:
-                        global_w[key] += net_para[key] * fed_avg_freqs[net_id]
+            if round == 0:
 
-            if args.server_momentum:
-                delta_w = copy.deepcopy(global_w)
-                for key in delta_w:
-                    delta_w[key] = old_w[key] - global_w[key]
-                    moment_v[key] = args.server_momentum * moment_v[key] + (1-args.server_momentum) * delta_w[key]
-                    global_w[key] = old_w[key] - moment_v[key]
+                for net_id, net in enumerate(nets_this_round.values()):
+                    net_para = net.state_dict()
+                    if net_id == 0:
+                        for key in net_para:
+                            global_w[key] = net_para[key] * fed_avg_freqs[net_id]
+                    else:
+                        for key in net_para:
+                            global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            global_model.load_state_dict(global_w)
+                if args.server_momentum:
+                    delta_w = copy.deepcopy(global_w)
+                    for key in delta_w:
+                        delta_w[key] = old_w[key] - global_w[key]
+                        moment_v[key] = args.server_momentum * moment_v[key] + (1-args.server_momentum) * delta_w[key]
+                        global_w[key] = old_w[key] - moment_v[key]
+
+                global_model.load_state_dict(global_w)
 
 
             #global_model.cuda()
@@ -868,6 +910,25 @@ if __name__ == '__main__':
             mkdirs(args.modeldir+'fedavg/')
 
             if global_acc > best_acc:
+
+                for net_id, net in enumerate(nets_this_round.values()):
+                    net_para = net.state_dict()
+                    if net_id == 0:
+                        for key in net_para:
+                            global_w[key] = net_para[key] * fed_avg_freqs[net_id]
+                    else:
+                        for key in net_para:
+                            global_w[key] += net_para[key] * fed_avg_freqs[net_id]
+
+                if args.server_momentum:
+                    delta_w = copy.deepcopy(global_w)
+                    for key in delta_w:
+                        delta_w[key] = old_w[key] - global_w[key]
+                        moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * delta_w[key]
+                        global_w[key] = old_w[key] - moment_v[key]
+
+                global_model.load_state_dict(global_w)
+
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
 
