@@ -665,7 +665,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     indices_all_clients=[]
 
     for net_id, net in nets.items():
-        print(net_id)
         dataidxs = net_dataidx_map[net_id]
         n_epoch = args.epochs
         X_train_client=X_train[dataidxs]
