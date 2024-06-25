@@ -190,9 +190,8 @@ class BasicBlock(nn.Module):
         out = self.bn1(out)
         out = self.relu(out)
 
-
         out = self.conv2(out)
-        out = self.ema(out)
+        out = self.ema(out) + 0.8*out
         out = self.bn2(out)
         out = self.relu(out)
 

@@ -273,6 +273,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
 
+
+
     def train_epoch(epoch, mode='train'):
         # 根据数据集定义k, q transform
         if mode == 'train':
@@ -457,12 +459,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 for j in range(args.fine_tune_steps):
                     X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
 
-                    a, b, out_test = net_new(X_total_sup)
-                    out_log = F.log_softmax(out, dim=1)
+                    # a, b, out_test = net_new(X_total_sup)
+                    # out_log = F.log_softmax(out, dim=1)
                     # out_test_log = F.log_softmax(out_test, dim=1)
                     # loss1 = loss_ce(out, support_labels)
                     # loos2 = loss_ce(out_test, support_labels)
                     # loss = 0.5 * F.kl_div(out_log, out_test_log, reduction='batchmean') + 0.5 * (loss1 + loos2)
+
                     loss = loss_ce(out, support_labels)
 
                     net_para = net_new.state_dict()
