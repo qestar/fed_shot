@@ -489,7 +489,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 prototypes2 = compute_class_prototypes(prototype_b, N)
 
                 # loss_all += loss_ce(out_all, y_total)
-                loss_all += F.mse_loss(prototypes1, prototypes2)*0.5
+                loss_all += F.mse_loss(prototypes1, prototypes2)
                 loss_all.backward()
                 optimizer.step()
                 ############################
