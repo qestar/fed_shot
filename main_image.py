@@ -519,8 +519,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 ##################################
                 del net_new, X_out_query, out
 
-            if np.random.rand() < 0.005:
-                print('loss: {:.4f}'.format(loss_all.item()))
+
 
             acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
 
@@ -570,7 +569,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             accs_train.append(train_epoch(epoch))
             if np.random.rand() < 0.05:
                 logger.info("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
-                print("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
+
 
         accs = []
         for epoch_test in range(args.num_test_tasks):
@@ -589,8 +588,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         return np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0)
 
-    if np.random.rand() < 0.3:
-        print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
+
     # logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
 
     return np.mean(accs)
