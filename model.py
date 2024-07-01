@@ -191,7 +191,7 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
 
         out = self.conv2(out)
-        out = self.ema(out) + 0.8*out
+        out = 0.2*self.ema(out) + out
         out = self.bn2(out)
         out = self.relu(out)
 
@@ -369,7 +369,6 @@ class MLP_header(nn.Module):
         x = self.relu(x)
         x = self.fc2(x)
         x = self.relu(x)
-        print('阿里v')
         return x
 
 
@@ -578,7 +577,7 @@ class ModelFed_Adp(nn.Module):
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
         self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
-        print(self.state_dict().keys())
+
 
     def _get_basemodel(self, model_name):
         try:
@@ -593,7 +592,9 @@ class ModelFed_Adp(nn.Module):
 
         # print("h before:", h)
         # print("h size:", h.size())
-        ebd = h.squeeze()
+
+        ebd = h.squeeze(dim=1)
+
         # print("h after:", h)
         # x = self.l1(h)
         # x = F.relu(x)
