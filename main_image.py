@@ -480,16 +480,16 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 #############################
                 # Q=K here update for all-model
                 for j in range(Q):
-                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 2) % 2*Q],
+                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 1) % Q],
                                                              tau=0.5)
 
                     loss_all += contras_loss / Q * 0.1
-                # N类每个类5*2个样本
-                prototypes1 = compute_class_prototypes(prototype_a, N)
-                prototypes2 = compute_class_prototypes(prototype_b, N)
+                # # N类每个类5*2个样本
+                # prototypes1 = compute_class_prototypes(prototype_a, N)
+                # prototypes2 = compute_class_prototypes(prototype_b, N)
 
-                # loss_all += loss_ce(out_all, y_total)
-                loss_all += F.mse_loss(prototypes1, prototypes2)
+                loss_all += loss_ce(out_all, y_total)
+                # loss_all += F.mse_loss(prototypes1, prototypes2)*0.1
                 loss_all.backward()
                 optimizer.step()
                 ############################
@@ -668,7 +668,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 if __name__ == '__main__':
     args = get_args()
-    print(args)
+    # print(args)
 
     if args.dataset == 'FC100':
         fine_split_train_map = {class_: i for i, class_ in enumerate(fine_split['train'])}
