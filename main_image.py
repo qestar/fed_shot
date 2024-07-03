@@ -152,10 +152,10 @@ def get_args():
     parser.add_argument('--num_test_tasks', type=int, default=10, help='number of meta-test tasks')
     parser.add_argument('--num_true_test_ratio', type=int, default=10, help='number of meta-test tasks (10)')
     parser.add_argument('--fine_tune_steps', type=int, default=5, help='number of meta-learning steps (5)')
-    parser.add_argument('--fine_tune_lr', type=float, default=0.1, help='number of meta-learning lr (0.05)')
+    parser.add_argument('--fine_tune_lr', type=float, default=0.01, help='number of meta-learning lr (0.05)')
     parser.add_argument('--meta_lr', type=float, default=0.1 / 100, help='number of meta-learning lr (0.05)')
-    parser.add_argument('--comm_round', type=int, default=2, help='number of maximum communication roun')
-    parser.add_argument('--optimizer', type=str, default='sgd', help='the optimizer')
+    parser.add_argument('--comm_round', type=int, default=200, help='number of maximum communication roun')
+    parser.add_argument('--optimizer', type=str, default='adam', help='the optimizer')
 
     parser.add_argument("--bert_cache_dir", default=None, type=str,
                         help=("path to the cache_dir of transformers"))
