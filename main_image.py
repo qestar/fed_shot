@@ -154,7 +154,7 @@ def get_args():
     parser.add_argument('--fine_tune_steps', type=int, default=5, help='number of meta-learning steps (5)')
     parser.add_argument('--fine_tune_lr', type=float, default=0.1, help='number of meta-learning lr (0.05)')
     parser.add_argument('--meta_lr', type=float, default=0.1 / 100, help='number of meta-learning lr (0.05)')
-    parser.add_argument('--comm_round', type=int, default=5000, help='number of maximum communication roun')
+    parser.add_argument('--comm_round', type=int, default=2, help='number of maximum communication roun')
     parser.add_argument('--optimizer', type=str, default='sgd', help='the optimizer')
 
     parser.add_argument("--bert_cache_dir", default=None, type=str,
@@ -243,7 +243,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 
     if args.mode == 'few-shot':
         if args.dataset == 'FC100':
-            n_classes = args.N
+            n_classes = args.N*4
         else:
             n_classes = args.N
 
@@ -273,10 +273,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     # net=nn.parallel.DistributedDataParallel(net)
     # net.cuda()
 
-    # logger.info('Training network %s' % str(net_id))
-    # logger.info('n_training: %d' % X_train_client.shape[0])
-    # logger.info('n_test: %d' % X_test.shape[0])
-
     if args_optimizer == 'adam':
         optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
@@ -301,9 +297,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 K = 5  # args.K
                 Q = args.Q
             elif args.dataset == 'FC100':
-                N = args.N
-                K = 5
-                Q = 5
+                N = args.N*4
+                K = 2
+                Q = 2
             elif args.dataset == 'miniImageNet':
                 N = args.N * 4
                 K = 2
@@ -399,22 +395,22 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             X_total_sup.append(X_class_i[sample_idx[:K]])
             # 数据增强
             if mode == 'train':
-                support_labels = torch.zeros(N * (K*2), dtype=torch.long)
+                support_labels = torch.zeros(N * (K*3), dtype=torch.long)
                 for i in range(N):
-                    support_labels[i * K*2:(i + 1) * K*2] = i
+                    support_labels[i * K*3:(i + 1) * K*3] = i
                     support_labels = support_labels.cuda()
                 for i in X_total_sup[len(X_total_sup)-1]:
-                    X_total_sup.append([np.rot90(i, p+1, (0, 1)) for p in range(1)])
+                    X_total_sup.append([np.rot90(i, p+1, (0, 1)) for p in range(2)])
 
             X_total_query.append(X_class_i[sample_idx[K:]])
             if mode == 'train':
                 if args.dataset == 'FC100' or args.dataset == '20newsgroup' or args.dataset == 'fewrel' or args.dataset == 'huffpost':
                     transformed_class_list.append(fine_split_train_map[class_])
-                    y_sup.append(torch.ones(K*2) * fine_split_train_map[class_])
+                    y_sup.append(torch.ones(K*3) * fine_split_train_map[class_])
                     y_query.append(torch.ones(Q) * fine_split_train_map[class_])
                 elif args.dataset == 'miniImageNet':
                     transformed_class_list.append(class_)
-                    y_sup.append(torch.ones(K*2) * class_)
+                    y_sup.append(torch.ones(K*3) * class_)
                     y_query.append(torch.ones(Q) * class_)
 
                 y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().cuda()
@@ -445,8 +441,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             loss_all = 0
             # all_classify update
             X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-            out_sup = X_out_all[:N * (K*2)].reshape([N, K*2, -1]).transpose(0, 1)
-            prototype_a =  X_out_all[:N * (K*2)]
+            out_sup = X_out_all[:N * (K*3)].reshape([N, K*3, -1]).transpose(0, 1)
+            prototype_a =  X_out_all[:N * (K*3)]
 
 
             if args.fine_tune_steps > 0:
@@ -475,12 +471,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                 prototype_b = X_transformer_out_sup
 
-                X_transformer_out_sup = X_transformer_out_sup.reshape([N, K*2, -1]).transpose(0, 1)
+                X_transformer_out_sup = X_transformer_out_sup.reshape([N, K*3, -1]).transpose(0, 1)
 
                 #############################
                 # Q=K here update for all-model
-                for j in range(Q):
-                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 1) % Q],
+                for j in range(Q*3):
+                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 1) % (Q*3)],
                                                              tau=0.5)
 
                     loss_all += contras_loss / Q * 0.1
@@ -507,7 +503,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                 # meta-update few-classifier on query
                 loss = loss_ce(out, query_labels)
-                out_sup_on_N_class = out_all[N * (K*2):, transformed_class_list]
+                out_sup_on_N_class = out_all[N * (K*3):, transformed_class_list]
                 out_sup_on_N_class /= out_sup_on_N_class.sum(-1, keepdim=True)
                 # loss += loss_ce(out, out_sup_on_N_class) * 0.1
                 loss += dkd_loss(out, out_sup_on_N_class, query_labels, 1.0, 8.0, 4.0) * 0.5
@@ -527,148 +523,106 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             return acc_train
 
         else:
-            use_logistic = True
+            with torch.no_grad():
+                X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0))
+                X_out_sup = X_out_all[:N * K]
+                X_out_query = X_out_all[N * K:]
 
-            if use_logistic:
-                with torch.no_grad():
-                    X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0))
-                    X_out_sup = X_out_all[:N * K]
-                    X_out_query = X_out_all[N * K:]
+                support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
+                query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
 
-                    support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
-                    query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
-
-                    clf = LogisticRegression(penalty='l2',
-                                             random_state=0,
-                                             C=1.0,
-                                             solver='lbfgs',
-                                             max_iter=1000,
-                                             multi_class='multinomial')
-                    clf.fit(support_features, support_labels.detach().cpu().numpy())
+                clf = LogisticRegression(penalty='l2',
+                                         random_state=0,
+                                         C=1.0,
+                                         solver='lbfgs',
+                                         max_iter=1000,
+                                         multi_class='multinomial')
+                clf.fit(support_features, support_labels.detach().cpu().numpy())
 
 
-                    out = torch.tensor(clf.predict_proba(query_features)).cuda()
+                out = torch.tensor(clf.predict_proba(query_features)).cuda()
 
-                    acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
-                    max_value, index = torch.max(out, -1)
+                acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
+                # del net_new, X_out_sup, X_out_query, out, param_require_grad, grad
+                return acc_train
 
-                    # del net_new, X_out_sup, X_out_query, out, param_require_grad, grad
-                    if test_only:
-                        return acc_train, max_value, index
-                    else:
-                        return acc_train
-
-                # return metrics.accuracy_score(query_labels.detach().cpu().numpy(), query_ys_pred)
+            # return metrics.accuracy_score(query_labels.detach().cpu().numpy(), query_ys_pred)
 
 
 
     if not test_only:
-        best_acc = 0
         accs_train = []
         for epoch in range(args.num_train_tasks):
             accs_train.append(train_epoch(epoch))
             if np.random.rand() < 0.05:
                 logger.info("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
 
-
         accs = []
         for epoch_test in range(args.num_test_tasks):
             accs.append(train_epoch(epoch_test, mode='test'))
+        return np.mean(accs)
     else:
         accs = []
-        max_values = []
-        indices = []
-
         for epoch_test in range(args.num_test_tasks * args.num_true_test_ratio):
-            acc, max_value, index = train_epoch(epoch_test, mode='test')
+            acc = train_epoch(epoch_test, mode='test')
             accs.append(acc)
-            max_values.append(max_value)
-            indices.append(index)
-            del acc, max_value, index
+            del acc
+        return np.mean(accs)
 
-        return np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0)
-
-
-    # logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
-
-    return np.mean(accs)
 
 
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device="cpu",
                              test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
-    max_value_all_clients = []
-    indices_all_clients = []
+
 
     for net_id, net in nets.items():
         print(net_id)
-
-        # net.cuda()
-
         dataidxs = net_dataidx_map[net_id]
-
-        # logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-
         n_epoch = args.epochs
-
-
-
         X_train_client = X_train[dataidxs]
         y_train_client = y_train[dataidxs]
-
-        # X_test=test_ds.data
-        # y_test=test_ds.target
 
         if test_only == False:
             testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,
                                              y_train_client, X_test, y_test,
                                              device=device, test_only=False)
         else:
-            # np.random.seed(1)
-            testacc, max_values, indices = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args,
+            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args,
                                                                   X_train_client, y_train_client, X_test, y_test,
                                                                   device=device, test_only=True,
                                                                   test_only_k=test_only_k)
-            max_value_all_clients.append(max_values)
-            indices_all_clients.append(indices)
-            # np.random.seed(int(time.time()))
 
             acc_list.append(testacc)
-
-            logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
-            print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
-
-            max_value_all_clients = torch.stack(max_value_all_clients, 0)
-            indices_all_clients = torch.stack(indices_all_clients, 0)
-            return acc_list, max_value_all_clients, indices_all_clients
+            # logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+            # print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
 
         # logger.info("net {} final test acc {:.4f}" .format(net_id, testacc))
 
         avg_acc += testacc
-        acc_list.append(testacc)
 
         # net.cpu()
 
-    logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
-    print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+    if test_only == True:
+        logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+        print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
 
     if test_only:
-        max_value_all_clients = torch.stack(max_value_all_clients, 0)
-        indices_all_clients = torch.stack(indices_all_clients, 0)
-        return acc_list, max_value_all_clients, indices_all_clients
+        avg_acc /= args.n_parties
+        logger.info("avg test acc %f" % avg_acc)
+        print("avg test acc %f" % avg_acc)
+        return acc_list
 
     avg_acc /= args.n_parties
-    if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
-        logger.info("std acc %f" % np.std(acc_list))
+
 
     return nets
 
 
 if __name__ == '__main__':
     args = get_args()
-    # print(args)
+    print(args)
 
     if args.dataset == 'FC100':
         fine_split_train_map = {class_: i for i, class_ in enumerate(fine_split['train'])}
@@ -798,9 +752,7 @@ if __name__ == '__main__':
                     net.load_state_dict(net_para)
 
             for k in [1, 5]:
-                global_acc, max_value_all_clients, indices_all_clients = local_train_net_few_shot(nets_this_round, args,
-                                                                                                  net_dataidx_map,
-                                                                                                  X_train, y_train,
+                global_acc = local_train_net_few_shot(nets_this_round, args,net_dataidx_map, X_train, y_train,
                                                                                                   X_test, y_test,
                                                                                                   device=device,
                                                                                                   test_only=True,
