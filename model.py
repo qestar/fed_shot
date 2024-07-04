@@ -595,6 +595,7 @@ class ModelFed_Adp(nn.Module):
 
         ebd = h.squeeze(dim=1)
 
+
         # print("h after:", h)
         # x = self.l1(h)
         # x = F.relu(x)

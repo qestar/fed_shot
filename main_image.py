@@ -442,7 +442,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             # all_classify update
             X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
             out_sup = X_out_all[:N * (K*3)].reshape([N, K*3, -1]).transpose(0, 1)
-            prototype_a =  X_out_all[:N * (K*3)]
+            out_query = X_out_all[N * (K*3):].reshape([N, Q, -1]).transpose(0, 1)
+            # prototype_a =  X_out_all[:N * (K*3)]
 
 
             if args.fine_tune_steps > 0:
@@ -476,10 +477,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 #############################
                 # Q=K here update for all-model
                 for j in range(Q*3):
-                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 1) % (Q*3)],
-                                                             tau=0.5)
-
+                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 1) % (Q*3)], tau=0.5)
                     loss_all += contras_loss / Q * 0.1
+                #     每个类加强后为 3张
+                for p in range(Q):
+                    contras_loss2, _ = InforNCE_Loss(out_query[p], out_sup[p*1+3],tau=0.5)
+                    contras_loss3, _ = InforNCE_Loss(out_query[p], out_sup[p+1], tau=0.5)
+                    loss_all += (contras_loss2 + contras_loss3) / Q * 0.1
+                print(loss_all.item())
                 # # N类每个类5*2个样本
                 # prototypes1 = compute_class_prototypes(prototype_a, N)
                 # prototypes2 = compute_class_prototypes(prototype_b, N)
