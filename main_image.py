@@ -484,7 +484,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     contras_loss2, _ = InforNCE_Loss(out_query[p], out_sup[p*1+3],tau=0.5)
                     contras_loss3, _ = InforNCE_Loss(out_query[p], out_sup[p+1], tau=0.5)
                     loss_all += (contras_loss2 + contras_loss3) / Q * 0.1
-                print(loss_all.item())
                 # # N类每个类5*2个样本
                 # prototypes1 = compute_class_prototypes(prototype_a, N)
                 # prototypes2 = compute_class_prototypes(prototype_b, N)
@@ -519,8 +518,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 net.load_state_dict(net_para_ori)
                 ##################################
                 del net_new, X_out_query, out
-
-
 
             acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
 
