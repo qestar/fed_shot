@@ -137,7 +137,7 @@ def get_args():
     parser.add_argument('--partition', type=str, default='noniid', help='the data partitioning strategy')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate (default: 0.01, 0.0005, 0.005)')
     parser.add_argument('--epochs', type=int, default=10, help='number of local epochs')
-    parser.add_argument('--n_parties', type=int, default=10, help='number of workers in a distributed cluster')
+    parser.add_argument('--n_parties', type=int, default=1, help='number of workers in a distributed cluster')
     parser.add_argument('--alg', type=str, default='fedavg',
                         help='communication strategy: fedavg/fedprox')
 
